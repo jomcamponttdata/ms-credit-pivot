@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "d2d2e6e4-6fb6-4f02-aec9-07c8d71b6c11",
     "name": "ms-credit - Part I",
-    "description": "Executable CRUD, balance, payment, charge and error tests for ms-credit. Set customerId to an ACTIVE PERSONAL customer in ms-customer before running. Run requests in order with PostgreSQL, ms-customer and ms-transaction available.",
+    "description": "Credit and credit-card tests. Set customerId to an ACTIVE PERSONAL customer with no bank accounts and businessCustomerId to an ACTIVE BUSINESS customer from ms-customer. The first read-only request checks the no-bank-account precondition via ms-account; personal credit creation then proves a bank account is not required. Requires PostgreSQL, ms-customer, ms-account and ms-transaction.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -19,7 +19,58 @@
   ],
   "item": [
     {
-      "name": "01 - Create personal credit",
+      "name": "01 - Verify personal customer has no bank accounts",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('Account service answers the precondition query', () => pm.response.to.have.status(200));",
+              "pm.test('Personal credit test customer has no bank accounts', () => pm.expect(pm.response.json()).to.be.an('array').that.is.empty);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{accountBaseUrl}}/api/v1/accounts?customerId={{customerId}}&page=0&size=20",
+          "host": [
+            "{{accountBaseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts"
+          ],
+          "query": [
+            {
+              "key": "customerId",
+              "value": "{{customerId}}"
+            },
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "20"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "02 - Create personal credit without a bank account",
       "event": [
         {
           "listen": "test",
@@ -76,7 +127,57 @@
       "response": []
     },
     {
-      "name": "02 - Find credit by ID",
+      "name": "03 - Reject second personal credit (422)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('A second personal credit is rejected', () => pm.response.to.have.status(422));",
+              "pm.test('Personal credit limit rule is returned', () => pm.expect(pm.response.json().detail).to.include('only one credit'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credits"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"creditType\": \"PERSONAL\",\n  \"approvedAmount\": 1000.0,\n  \"currency\": \"PEN\",\n  \"interestRate\": 18.5\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "04 - Find credit by ID",
       "event": [
         {
           "listen": "test",
@@ -114,7 +215,7 @@
       "response": []
     },
     {
-      "name": "03 - Get credit balance",
+      "name": "05 - Get credit balance",
       "event": [
         {
           "listen": "test",
@@ -158,7 +259,7 @@
       "response": []
     },
     {
-      "name": "04 - List credits",
+      "name": "06 - List credits",
       "event": [
         {
           "listen": "test",
@@ -209,7 +310,7 @@
       "response": []
     },
     {
-      "name": "05 - Pay credit",
+      "name": "07 - Pay credit",
       "event": [
         {
           "listen": "test",
@@ -266,7 +367,7 @@
       "response": []
     },
     {
-      "name": "06 - Create personal credit card",
+      "name": "08 - Create personal credit card",
       "event": [
         {
           "listen": "test",
@@ -322,7 +423,7 @@
       "response": []
     },
     {
-      "name": "07 - Find card by ID and balance",
+      "name": "09 - Find card by ID and balance",
       "event": [
         {
           "listen": "test",
@@ -361,7 +462,7 @@
       "response": []
     },
     {
-      "name": "08 - List credit cards",
+      "name": "10 - List credit cards",
       "event": [
         {
           "listen": "test",
@@ -412,7 +513,7 @@
       "response": []
     },
     {
-      "name": "09 - Charge credit card",
+      "name": "11 - Charge credit card",
       "event": [
         {
           "listen": "test",
@@ -468,7 +569,63 @@
       "response": []
     },
     {
-      "name": "10 - Update credit",
+      "name": "07 - Pay credit-card",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('Status is 201 Created', () => pm.response.to.have.status(201));",
+              "pm.test('Credit card payment receipt is returned', () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.movementType).to.equal('PAYMENT');",
+              "    pm.expect(body.amount).to.equal(100);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"amount\": 100.00,\n  \"currency\": \"PEN\",\n  \"description\": \"Credit card payment\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credit-cards/{{cardId}}/payments",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credit-cards",
+            "{{cardId}}",
+            "payments"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "12 - Update credit",
       "event": [
         {
           "listen": "test",
@@ -521,7 +678,7 @@
       "response": []
     },
     {
-      "name": "11 - Update credit card",
+      "name": "13 - Update credit card",
       "event": [
         {
           "listen": "test",
@@ -572,7 +729,7 @@
       "response": []
     },
     {
-      "name": "12 - Reject invalid credit amount",
+      "name": "14 - Reject invalid credit amount",
       "event": [
         {
           "listen": "test",
@@ -622,7 +779,324 @@
       "response": []
     },
     {
-      "name": "13 - Delete card",
+      "name": "15 - Reject personal credit for a business customer (422)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('A business customer cannot request a personal credit', () => pm.response.to.have.status(422));",
+              "pm.test('Customer and credit types must match', () => pm.expect(pm.response.json().detail).to.include('does not match'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credits"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"{{businessCustomerId}}\",\n  \"creditType\": \"PERSONAL\",\n  \"approvedAmount\": 1000.0,\n  \"currency\": \"PEN\",\n  \"interestRate\": 18.5\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "16 - Create first business credit",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('First business credit is created', () => pm.response.to.have.status(201));",
+              "const body = pm.response.json();",
+              "pm.test('Credit belongs to the business customer', () => { pm.expect(body.creditType).to.equal('BUSINESS'); pm.expect(body.outstandingBalance).to.equal(2500); });",
+              "pm.collectionVariables.set('businessCreditId', body.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credits"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"{{businessCustomerId}}\",\n  \"creditType\": \"BUSINESS\",\n  \"approvedAmount\": 2500.0,\n  \"currency\": \"PEN\",\n  \"interestRate\": 15.0\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "17 - Create a second business credit",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('A business customer can have multiple credits', () => pm.response.to.have.status(201));",
+              "const body = pm.response.json();",
+              "pm.test('Second business credit is created', () => { pm.expect(body.creditType).to.equal('BUSINESS'); pm.expect(body.outstandingBalance).to.equal(1000); });",
+              "pm.collectionVariables.set('secondBusinessCreditId', body.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credits"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"{{businessCustomerId}}\",\n  \"creditType\": \"BUSINESS\",\n  \"approvedAmount\": 1000.0,\n  \"currency\": \"PEN\",\n  \"interestRate\": 12.0\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "18 - Create business credit card",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('Business credit card is issued', () => pm.response.to.have.status(201));",
+              "const body = pm.response.json();",
+              "pm.test('Business card starts with its full available limit', () => { pm.expect(body.cardType).to.equal('BUSINESS'); pm.expect(body.availableCredit).to.equal(3000); });",
+              "pm.collectionVariables.set('businessCardId', body.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credit-cards",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credit-cards"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"{{businessCustomerId}}\",\n  \"cardType\": \"BUSINESS\",\n  \"creditLimit\": 3000.0,\n  \"currency\": \"PEN\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "19 - Delete business credit card",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('Business credit card cleanup succeeds', () => pm.response.to.have.status(204));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credit-cards/{{businessCardId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credit-cards",
+            "{{businessCardId}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "20 - Delete first business credit",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('First business credit cleanup succeeds', () => pm.response.to.have.status(204));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credits/{{businessCreditId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credits",
+            "{{businessCreditId}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "21 - Delete second business credit",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "packages": {},
+            "exec": [
+              "pm.test('Second business credit cleanup succeeds', () => pm.response.to.have.status(204));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlationId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credits/{{secondBusinessCreditId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credits",
+            "{{secondBusinessCreditId}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "22 - Delete personal card",
       "event": [
         {
           "listen": "test",
@@ -659,7 +1133,7 @@
       "response": []
     },
     {
-      "name": "14 - Delete credit",
+      "name": "23 - Delete personal credit",
       "event": [
         {
           "listen": "test",
@@ -696,7 +1170,7 @@
       "response": []
     },
     {
-      "name": "15 - Find deleted credit returns 404",
+      "name": "24 - Find deleted personal credit returns 404",
       "event": [
         {
           "listen": "test",
@@ -764,6 +1238,26 @@
       "key": "creditMovementId",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "businessCustomerId",
+      "value": ""
+    },
+    {
+      "key": "businessCreditId",
+      "value": ""
+    },
+    {
+      "key": "secondBusinessCreditId",
+      "value": ""
+    },
+    {
+      "key": "businessCardId",
+      "value": ""
+    },
+    {
+      "key": "accountBaseUrl",
+      "value": "http://localhost:8082"
     }
   ]
 }
