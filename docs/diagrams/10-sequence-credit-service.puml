@@ -1,0 +1,434 @@
+@startuml 10-sequence-credit-service
+title credit-service - Diagrama de secuencia
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+
+actor "Cliente / Empleado\n(Postman)" as User
+participant "CreditController /\nCreditCardController\n(adaptadores WebFlux)" as Controller
+participant "CreditApplicationService /\nCardApplicationService\n(casos de uso, RxJava 3)" as Service
+participant "CreditEligibilityPolicyFactory" as Policy
+participant "CustomerGateway /\nWebClientCustomerGateway" as CustomerGw
+participant "Repositorios de crédito y tarjeta\n+ adaptadores R2DBC" as Repo
+participant "MovementGateway\n+ WebClientMovementGateway" as MovementGw
+database "PostgreSQL\ncredit_db" as DB
+participant "customer-service" as CustomerSvc
+participant "transaction-service" as TransactionSvc
+participant "CorrelationIdWebFilter\n(WebFilter, prioridad máxima)" as Correlation
+
+note over Controller, MovementGw
+  Los casos de uso y puertos usan RxJava 3.
+  Los controladores WebFlux y los adaptadores R2DBC/WebClient
+  mantienen Reactor en sus APIs Spring y convierten explícitamente
+  en los límites con RxJava3Adapter.
+end note
+
+note over User, Correlation
+  Todas las solicitudes entrantes pasan por este filtro. Reutiliza
+  X-Correlation-ID si no está vacío; si falta o está en blanco, genera un UUID.
+  Todas las respuestas incluyen X-Correlation-ID: {id}. El controlador pasa
+  el ID explícitamente a los casos de uso y los WebClient salientes lo envían
+  en X-Correlation-ID.
+end note
+
+== 1. Solicitar crédito (POST /api/v1/credits) ==
+User -> Controller : POST /api/v1/credits\nCreditCreateRequest
+Controller -> Service : create(command): Single<Credit>
+Service -> CustomerGw : findById(customerId)
+CustomerGw -> CustomerSvc : GET /api/v1/customers/{customerId}\nX-Correlation-ID: {id}
+CustomerSvc --> CustomerGw : 200 Customer\n(customerType, status)\nX-Correlation-ID: {id}
+CustomerGw --> Service : Single<CustomerSnapshot>
+alt cliente no existe o está INACTIVE
+  CustomerSvc --> CustomerGw : 404 Not Found\nX-Correlation-ID: {id}
+  CustomerGw --> Service : ResourceNotFoundException
+  Service --> Controller : error
+  Controller --> User : 404 Not Found
+else tipo distinto al tipo de crédito
+  Service --> Controller : BusinessRuleViolationException
+  Controller --> User : 422 Unprocessable Entity
+else cliente activo y tipo compatible
+  Service -> Repo : findByCustomerId(customerId)
+  Repo -> DB : SELECT créditos del cliente
+  DB --> Repo : créditos existentes
+  Repo --> Service : Flowable<Credit>
+  Service -> Policy : get(customerType).validate(customer, existing)
+  alt cliente PERSONAL ya tiene crédito
+    Policy --> Service : BusinessRuleViolationException
+    Service --> Controller : error
+    Controller --> User : 422 Unprocessable Entity
+  else política válida
+    Service -> Repo : save(Credit)
+    note right of Service
+      outstandingBalance inicia igual a approvedAmount;
+      status inicial ACTIVE.
+    end note
+    Repo -> DB : INSERT crédito
+    alt conflicto de unicidad para cliente PERSONAL
+      DB --> Repo : restricción única
+      Repo --> Service : BusinessRuleViolationException
+      Service --> Controller : error
+      Controller --> User : 422 Unprocessable Entity
+    else guardado
+      DB --> Repo : crédito creado
+      Repo --> Service : Single<Credit>
+      Controller --> User : 201 Created + Location\nCredit
+    end
+  end
+end
+note over Service, Policy
+  PERSONAL: un crédito por persona. BUSINESS: se permiten varios.
+  No se requiere una cuenta bancaria.
+end note
+note over Controller, User
+  Respuestas del contrato: 201, 400, 404 y 422.
+end note
+
+== 2. Listar créditos (GET /api/v1/credits) ==
+User -> Controller : GET /api/v1/credits\n?customerId&page&size
+Controller -> Service : findAll(filter, page, size): Flowable<Credit>
+Service -> Repo : findAll(filter, page, size)
+Repo -> DB : SELECT ... ORDER BY createdAt, id\nLIMIT/OFFSET
+DB --> Repo : créditos
+Repo --> Service : Flowable<Credit>
+Controller --> User : 200 OK\napplication/json (arreglo) o application/x-ndjson
+
+== 3. Consultar crédito (GET /api/v1/credits/{creditId}) ==
+User -> Controller : GET /api/v1/credits/{creditId}
+Controller -> Service : findById(creditId): Single<Credit>
+Service -> Repo : findById(creditId)
+Repo -> DB : SELECT crédito
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  Repo --> Service : Maybe<Credit>
+  Controller --> User : 200 OK + Credit
+end
+
+== 4. Actualizar crédito (PUT /api/v1/credits/{creditId}) ==
+User -> Controller : PUT /api/v1/credits/{creditId}\nCreditUpdateRequest
+Controller -> Service : update(creditId, command): Single<Credit>
+Service -> Repo : findById(creditId)
+Repo -> DB : SELECT crédito y version
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  DB --> Repo : crédito actual
+  Repo --> Service : Maybe<Credit>
+  Service -> Service : validar approvedAmount cubre\noutstandingBalance; validar interés
+  alt regla inválida
+    Service --> Controller : BusinessRuleViolationException
+    Controller --> User : 422 Unprocessable Entity
+  else regla válida
+    Service -> Repo : save(crédito actualizado)
+    Repo -> DB : UPDATE crédito con control optimista
+    alt versión desactualizada
+      Repo --> Service : ConcurrentModificationException
+      Controller --> User : 409 Conflict
+    else guardado
+      DB --> Repo : crédito actualizado
+      Repo --> Service : Single<Credit>
+      Controller --> User : 200 OK + Credit
+    end
+  end
+end
+note over Controller, User
+  Solicitud inválida: 400 Bad Request.
+end note
+
+== 5. Eliminar crédito (DELETE /api/v1/credits/{creditId}) ==
+User -> Controller : DELETE /api/v1/credits/{creditId}
+Controller -> Service : delete(creditId): Completable
+Service -> Repo : findById(creditId)
+Repo -> DB : SELECT crédito
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  Service -> Repo : delete(crédito con version)
+  Repo -> DB : DELETE crédito
+  DB --> Repo : OK
+  Controller --> User : 204 No Content
+end
+
+== 6. Consultar saldo de crédito (GET /api/v1/credits/{creditId}/balance) ==
+User -> Controller : GET /api/v1/credits/{creditId}/balance
+Controller -> Service : getBalance(creditId): Single<Balance>
+Service -> Repo : findById(creditId)
+Repo -> DB : SELECT crédito
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  Repo --> Service : Maybe<Credit>
+  Service --> Controller : Balance(outstandingBalance)
+  Controller --> User : 200 OK + Balance\n(productType=CREDIT)
+end
+
+== 7. Pagar crédito (POST /api/v1/credits/{creditId}/payments) ==
+User -> Controller : POST /api/v1/credits/{creditId}/payments\nOperationRequest
+Controller -> Service : pay(command): Single<MovementReceipt>
+Service -> Repo : findById(creditId)
+Repo -> DB : SELECT crédito y version
+alt crédito no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else crédito existente
+  DB --> Repo : saldo pendiente y version
+  Repo --> Service : Maybe<Credit>
+  Service -> Service : validar pago <= saldo;\nactualizar saldo (cero -> PAID_OFF)
+  alt importe o moneda no válidos
+    Service --> Controller : BusinessRuleViolationException
+    Controller --> User : 422 Unprocessable Entity
+  else pago válido
+    Service -> Repo : save(crédito pagado)
+    Repo -> DB : UPDATE con control optimista de versión
+    alt versión desactualizada
+      Repo --> Service : ConcurrentModificationException
+      Controller --> User : 409 Conflict
+    else guardado
+      DB --> Repo : crédito actualizado
+      Repo --> Service : Single<Credit>
+      Service -> MovementGw : register(CREDIT, PAYMENT, ...)
+      MovementGw -> TransactionSvc : POST /api/v1/movements\nMovementRequest\nX-Correlation-ID: {id}
+      alt movimiento registrado
+        TransactionSvc --> MovementGw : 201 Created + Movement\nX-Correlation-ID: {id}
+        MovementGw --> Service : Single<MovementReceipt>
+        Service --> Controller : MovementReceipt
+        Controller --> User : 201 Created + MovementReceipt
+      else fallo confirmado (respuesta 4xx)
+        TransactionSvc --> MovementGw : error definitivo\nX-Correlation-ID: {id}
+        MovementGw --> Service : error no ambiguo
+        Service -> Repo : restaurar crédito original\ncon la versión guardada
+        Repo -> DB : UPDATE compensatorio
+        Controller --> User : 503 Service Unavailable
+      else timeout, transporte o respuesta 5xx
+        MovementGw --> Service : error ambiguo
+        note right of Service
+          No compensar: el movimiento podría haberse guardado.
+          Requiere reconciliación.
+        end note
+        Controller --> User : 503 Service Unavailable
+      end
+    end
+  end
+end
+note over Controller, User
+  Solicitud inválida: 400 Bad Request.
+end note
+
+== 8. Emitir tarjeta (POST /api/v1/credit-cards) ==
+User -> Controller : POST /api/v1/credit-cards\nCreditCardCreateRequest
+Controller -> Service : create(command): Single<CreditCard>
+Service -> CustomerGw : findById(customerId)
+CustomerGw -> CustomerSvc : GET /api/v1/customers/{customerId}\nX-Correlation-ID: {id}
+CustomerSvc --> CustomerGw : Customer(customerType, status)\nX-Correlation-ID: {id}
+CustomerGw --> Service : Single<CustomerSnapshot>
+alt cliente no existe o está INACTIVE
+  CustomerSvc --> CustomerGw : 404 Not Found\nX-Correlation-ID: {id}
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else tipo distinto al tipo de tarjeta
+  Service --> Controller : BusinessRuleViolationException
+  Controller --> User : 422 Unprocessable Entity
+else cliente activo y tipo compatible
+  Service -> Repo : save(CreditCard)
+  note right of Service
+    availableCredit inicia igual a creditLimit.
+  end note
+  Repo -> DB : INSERT tarjeta
+  DB --> Repo : tarjeta creada
+  Repo --> Service : Single<CreditCard>
+  Controller --> User : 201 Created + Location\nCreditCard
+end
+note over Controller, User
+  Respuestas del contrato: 201, 400, 404 y 422.
+end note
+
+== 9. Listar tarjetas (GET /api/v1/credit-cards) ==
+User -> Controller : GET /api/v1/credit-cards\n?customerId&page&size
+Controller -> Service : findAll(filter, page, size): Flowable<CreditCard>
+Service -> Repo : findAll(filter, page, size)
+Repo -> DB : SELECT ... ORDER BY createdAt, id\nLIMIT/OFFSET
+DB --> Repo : tarjetas
+Repo --> Service : Flowable<CreditCard>
+Controller --> User : 200 OK\napplication/json (arreglo) o application/x-ndjson
+
+== 10. Consultar tarjeta (GET /api/v1/credit-cards/{creditCardId}) ==
+User -> Controller : GET /api/v1/credit-cards/{creditCardId}
+Controller -> Service : findById(creditCardId): Single<CreditCard>
+Service -> Repo : findById(creditCardId)
+Repo -> DB : SELECT tarjeta
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  Repo --> Service : Maybe<CreditCard>
+  Controller --> User : 200 OK + CreditCard
+end
+
+== 11. Actualizar límite (PUT /api/v1/credit-cards/{creditCardId}) ==
+User -> Controller : PUT /api/v1/credit-cards/{creditCardId}\nCreditCardUpdateRequest
+Controller -> Service : update(creditCardId, command): Single<CreditCard>
+Service -> Repo : findById(creditCardId)
+Repo -> DB : SELECT tarjeta y version
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  DB --> Repo : límite y crédito disponible actuales
+  Repo --> Service : Maybe<CreditCard>
+  Service -> Service : crédito usado = límite - disponible;\nvalidar nuevo límite >= crédito usado;\nrecalcular disponible = nuevo límite - usado
+  alt regla inválida
+    Service --> Controller : BusinessRuleViolationException
+    Controller --> User : 422 Unprocessable Entity
+  else regla válida
+    Service -> Repo : save(tarjeta actualizada)
+    Repo -> DB : UPDATE con control optimista
+    alt versión desactualizada
+      Repo --> Service : ConcurrentModificationException
+      Controller --> User : 409 Conflict
+    else guardado
+      DB --> Repo : tarjeta actualizada
+      Repo --> Service : Single<CreditCard>
+      Controller --> User : 200 OK + CreditCard
+    end
+  end
+end
+note over Controller, User
+  Solicitud inválida: 400 Bad Request.
+end note
+
+== 12. Eliminar tarjeta (DELETE /api/v1/credit-cards/{creditCardId}) ==
+User -> Controller : DELETE /api/v1/credit-cards/{creditCardId}
+Controller -> Service : delete(creditCardId): Completable
+Service -> Repo : findById(creditCardId)
+Repo -> DB : SELECT tarjeta
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  Service -> Repo : delete(tarjeta con version)
+  Repo -> DB : DELETE tarjeta
+  DB --> Repo : OK
+  Controller --> User : 204 No Content
+end
+
+== 13. Consultar crédito disponible (GET /api/v1/credit-cards/{creditCardId}/balance) ==
+User -> Controller : GET /api/v1/credit-cards/{creditCardId}/balance
+Controller -> Service : getBalance(creditCardId): Single<Balance>
+Service -> Repo : findById(creditCardId)
+Repo -> DB : SELECT tarjeta
+alt no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else existe
+  Repo --> Service : Maybe<CreditCard>
+  Service --> Controller : Balance(availableCredit)
+  Controller --> User : 200 OK + Balance\n(productType=CREDIT_CARD)
+end
+
+== 14. Cargar consumo (POST /api/v1/credit-cards/{creditCardId}/charges) ==
+User -> Controller : POST /api/v1/credit-cards/{creditCardId}/charges\nOperationRequest
+Controller -> Service : charge(command): Single<MovementReceipt>
+Service -> Repo : findById(creditCardId)
+Repo -> DB : SELECT tarjeta y version
+alt tarjeta no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else tarjeta existente
+  DB --> Repo : crédito disponible y version
+  Repo --> Service : Maybe<CreditCard>
+  Service -> Service : validar cargo <= disponible;\nreducir crédito disponible
+  alt importe o moneda no válidos
+    Service --> Controller : BusinessRuleViolationException
+    Controller --> User : 422 Unprocessable Entity
+  else cargo válido
+    Service -> Repo : save(tarjeta actualizada)
+    Repo -> DB : UPDATE con control optimista de versión
+    alt versión desactualizada
+      Repo --> Service : ConcurrentModificationException
+      Controller --> User : 409 Conflict
+    else guardado
+      DB --> Repo : tarjeta actualizada
+      Repo --> Service : Single<CreditCard>
+      Service -> MovementGw : register(CREDIT_CARD, CHARGE, ...)
+      MovementGw -> TransactionSvc : POST /api/v1/movements\nMovementRequest\nX-Correlation-ID: {id}
+      alt movimiento registrado
+        TransactionSvc --> MovementGw : 201 Created + Movement\nX-Correlation-ID: {id}
+        MovementGw --> Service : Single<MovementReceipt>
+        Service --> Controller : MovementReceipt
+       Controller --> User : 201 Created + MovementReceipt
+      else fallo confirmado (respuesta 4xx)
+        TransactionSvc --> MovementGw : error definitivo\nX-Correlation-ID: {id}
+        MovementGw --> Service : error no ambiguo
+        Service -> Repo : restaurar crédito disponible original
+        Repo -> DB : UPDATE compensatorio
+        Controller --> User : 503 Service Unavailable
+      else timeout, transporte o respuesta 5xx
+        MovementGw --> Service : error ambiguo
+        note right of Service
+          No compensar; requiere reconciliación.
+        end note
+        Controller --> User : 503 Service Unavailable
+      end
+    end
+  end
+end
+note over Controller, User
+  Solicitud inválida: 400 Bad Request.
+end note
+
+== 15. Pagar tarjeta (POST /api/v1/credit-cards/{creditCardId}/payments) ==
+User -> Controller : POST /api/v1/credit-cards/{creditCardId}/payments\nOperationRequest
+Controller -> Service : pay(command): Single<MovementReceipt>
+Service -> Repo : findById(creditCardId)
+Repo -> DB : SELECT tarjeta y version
+alt tarjeta no existe
+  Service --> Controller : ResourceNotFoundException
+  Controller --> User : 404 Not Found
+else tarjeta existente
+  DB --> Repo : límite, crédito disponible y version
+  Repo --> Service : Maybe<CreditCard>
+  Service -> Service : validar pago <= crédito usado;\naumentar crédito disponible
+  alt importe o moneda no válidos
+    Service --> Controller : BusinessRuleViolationException
+    Controller --> User : 422 Unprocessable Entity
+  else pago válido
+    Service -> Repo : save(tarjeta actualizada)
+    Repo -> DB : UPDATE con control optimista de versión
+    alt versión desactualizada
+      Repo --> Service : ConcurrentModificationException
+      Controller --> User : 409 Conflict
+    else guardado
+      DB --> Repo : tarjeta actualizada
+      Repo --> Service : Single<CreditCard>
+      Service -> MovementGw : register(CREDIT_CARD, PAYMENT, ...)
+      MovementGw -> TransactionSvc : POST /api/v1/movements\nMovementRequest\nX-Correlation-ID: {id}
+      alt movimiento registrado
+        TransactionSvc --> MovementGw : 201 Created + Movement\nX-Correlation-ID: {id}
+        MovementGw --> Service : Single<MovementReceipt>
+        Service --> Controller : MovementReceipt
+        Controller --> User : 201 Created + MovementReceipt
+      else fallo confirmado (respuesta 4xx)
+        TransactionSvc --> MovementGw : error definitivo\nX-Correlation-ID: {id}
+        MovementGw --> Service : error no ambiguo
+        Service -> Repo : restaurar crédito disponible original
+        Repo -> DB : UPDATE compensatorio
+        Controller --> User : 503 Service Unavailable
+      else timeout, transporte o respuesta 5xx
+        MovementGw --> Service : error ambiguo
+        note right of Service
+          No compensar; requiere reconciliación.
+        end note
+        Controller --> User : 503 Service Unavailable
+      end
+    end
+  end
+end
+note over Controller, User
+  Solicitud inválida: 400 Bad Request.
+end note
+
+@enduml

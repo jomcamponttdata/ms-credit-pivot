@@ -1,0 +1,657 @@
+openapi: 3.0.3
+info:
+  title: ms-credit API
+  version: 1.0.0
+  description: |
+    Credits and credit cards: requests, payments, charges and balances.
+    
+    Conventions:
+    - Amounts are decimals with two fraction digits (`multipleOf: 0.01`) plus an ISO 4217 `currency`.
+      Generators must map them to BigDecimal, never to floating point.
+    - List endpoints can be consumed as `application/json` (array) or `application/x-ndjson` (reactive stream).
+    - Errors follow RFC 7807 (`application/problem+json`): 400 validation, 404 not found,
+      409 duplicate or concurrent modification (retry), 422 business rule violated, 503 downstream failure.
+    - Part I has no authentication (JWT is added in Part III).
+    
+    Database: PostgreSQL (R2DBC). Depends on ms-customer and ms-transaction.
+servers:
+  - url: http://localhost:8083
+    description: ms-credit (local)
+
+tags:
+  - name: Credits
+    description: ms-credit (active products)
+  - name: Credit Cards
+    description: ms-credit (active products)
+
+paths:
+  /api/v1/credits:
+    get:
+      tags: [Credits]
+      operationId: findAllCredits
+      summary: List credits (paginated)
+      parameters:
+        - name: customerId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Credits found
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Credit'
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/Credit'
+    post:
+      tags: [Credits]
+      operationId: createCredit
+      summary: Request a credit
+      description: |
+        Eligibility rules (Strategy by customer type). The customer must be ACTIVE and the credit
+        type must match the customer type.
+        - PERSONAL customer: only one credit per person.
+        - BUSINESS customer: more than one credit allowed.
+        A bank account is not required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreditCreateRequest'
+      responses:
+        '201':
+          description: Credit created
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Credit'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/BusinessRuleViolation'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/credits/{creditId}:
+    parameters:
+      - $ref: '#/components/parameters/CreditId'
+    get:
+      tags: [Credits]
+      operationId: findCreditById
+      summary: Get a credit by id
+      responses:
+        '200':
+          description: Credit found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Credit'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Credits]
+      operationId: updateCredit
+      summary: Update a credit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreditUpdateRequest'
+      responses:
+        '200':
+          description: Credit updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Credit'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/BusinessRuleViolation'
+    delete:
+      tags: [Credits]
+      operationId: deleteCredit
+      summary: Delete a credit
+      responses:
+        '204':
+          description: Credit deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/credits/{creditId}/balance:
+    parameters:
+      - $ref: '#/components/parameters/CreditId'
+    get:
+      tags: [Credits]
+      operationId: getCreditBalance
+      summary: Get the outstanding balance of a credit
+      responses:
+        '200':
+          description: Balance found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/credits/{creditId}/payments:
+    parameters:
+      - $ref: '#/components/parameters/CreditId'
+    post:
+      tags: [Credits]
+      operationId: payCredit
+      summary: Pay a credit
+      description: |
+        The payment cannot exceed the outstanding balance. The movement is registered in
+        ms-transaction. If registration definitively fails, ms-credit attempts to
+        compensate its local update and returns 503. A timeout has an ambiguous outcome because
+        the movement may already have been persisted and requires reconciliation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '201':
+          description: Payment registered
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MovementReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/BusinessRuleViolation'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/credit-cards:
+    get:
+      tags: [Credit Cards]
+      operationId: findAllCreditCards
+      summary: List credit cards (paginated)
+      parameters:
+        - name: customerId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Credit cards found
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CreditCard'
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/CreditCard'
+    post:
+      tags: [Credit Cards]
+      operationId: createCreditCard
+      summary: Issue a credit card
+      description: The customer must be ACTIVE and the card type must match the customer type (PERSONAL or BUSINESS).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreditCardCreateRequest'
+      responses:
+        '201':
+          description: Credit card issued
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditCard'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/BusinessRuleViolation'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/credit-cards/{creditCardId}:
+    parameters:
+      - $ref: '#/components/parameters/CreditCardId'
+    get:
+      tags: [Credit Cards]
+      operationId: findCreditCardById
+      summary: Get a credit card by id
+      responses:
+        '200':
+          description: Credit card found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditCard'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Credit Cards]
+      operationId: updateCreditCard
+      summary: Update a credit card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreditCardUpdateRequest'
+      responses:
+        '200':
+          description: Credit card updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditCard'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/BusinessRuleViolation'
+    delete:
+      tags: [Credit Cards]
+      operationId: deleteCreditCard
+      summary: Delete a credit card
+      responses:
+        '204':
+          description: Credit card deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/credit-cards/{creditCardId}/balance:
+    parameters:
+      - $ref: '#/components/parameters/CreditCardId'
+    get:
+      tags: [Credit Cards]
+      operationId: getCreditCardBalance
+      summary: Get the available credit of a card
+      responses:
+        '200':
+          description: Balance found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balance'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/credit-cards/{creditCardId}/charges:
+    parameters:
+      - $ref: '#/components/parameters/CreditCardId'
+    post:
+      tags: [Credit Cards]
+      operationId: chargeCreditCard
+      summary: Charge a consumption to a credit card
+      description: |
+        The charge cannot exceed the available credit. The movement is registered in ms-transaction.
+        If registration definitively fails, ms-credit attempts to compensate its local update and
+        returns 503. A timeout has an ambiguous outcome because the movement may already have been
+        persisted and requires reconciliation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '201':
+          description: Charge registered
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MovementReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/BusinessRuleViolation'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/credit-cards/{creditCardId}/payments:
+    parameters:
+      - $ref: '#/components/parameters/CreditCardId'
+    post:
+      tags: [Credit Cards]
+      operationId: payCreditCard
+      summary: Pay a credit card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+      responses:
+        '201':
+          description: Payment registered
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MovementReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/BusinessRuleViolation'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+components:
+  parameters:
+    CreditId:
+      name: creditId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CreditCardId:
+      name: creditCardId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Zero-based page index. Results are ordered by createdAt and id, so pages are stable.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Size:
+      name: size
+      in: query
+      required: false
+      description: Page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    BadRequest:
+      description: Invalid request (validation errors)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: Duplicate resource or concurrent modification (retry the request)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    BusinessRuleViolation:
+      description: A business rule was violated
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: |
+        A dependent service failed. A confirmed failure triggers an attempt at local compensation;
+        if compensation conflicts with a concurrent update, or the movement call times out, the final
+        outcome is ambiguous and requires reconciliation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    CreditType:
+      type: string
+      enum: [PERSONAL, BUSINESS]
+    CardType:
+      type: string
+      enum: [PERSONAL, BUSINESS]
+    CreditStatus:
+      type: string
+      enum: [ACTIVE, PAID_OFF]
+    CreditCreateRequest:
+      type: object
+      required: [customerId, creditType, approvedAmount]
+      properties:
+        customerId:
+          type: string
+          format: uuid
+        creditType:
+          $ref: '#/components/schemas/CreditType'
+        approvedAmount:
+          $ref: '#/components/schemas/PositiveAmount'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        interestRate:
+          type: number
+          minimum: 0
+          description: Annual rate in percent
+          example: 18.5
+    CreditUpdateRequest:
+      type: object
+      description: Customer and credit type are not updatable
+      properties:
+        approvedAmount:
+          $ref: '#/components/schemas/PositiveAmount'
+        interestRate:
+          type: number
+          minimum: 0
+    Credit:
+      type: object
+      required: [id, customerId, creditType, approvedAmount, outstandingBalance, currency, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        creditType:
+          $ref: '#/components/schemas/CreditType'
+        approvedAmount:
+          $ref: '#/components/schemas/PositiveAmount'
+        outstandingBalance:
+          $ref: '#/components/schemas/Amount'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        interestRate:
+          type: number
+        status:
+          $ref: '#/components/schemas/CreditStatus'
+        createdAt:
+          type: string
+          format: date-time
+    CreditCardCreateRequest:
+      type: object
+      required: [customerId, cardType, creditLimit]
+      properties:
+        customerId:
+          type: string
+          format: uuid
+        cardType:
+          $ref: '#/components/schemas/CardType'
+        creditLimit:
+          $ref: '#/components/schemas/PositiveAmount'
+        currency:
+          $ref: '#/components/schemas/Currency'
+    CreditCardUpdateRequest:
+      type: object
+      description: Customer and card type are not updatable
+      properties:
+        creditLimit:
+          $ref: '#/components/schemas/PositiveAmount'
+    CreditCard:
+      type: object
+      required: [id, customerId, cardType, cardNumber, creditLimit, availableCredit, currency, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        cardType:
+          $ref: '#/components/schemas/CardType'
+        cardNumber:
+          type: string
+          description: Masked card number
+          example: '**** **** **** 1234'
+        creditLimit:
+          $ref: '#/components/schemas/PositiveAmount'
+        availableCredit:
+          $ref: '#/components/schemas/Amount'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        createdAt:
+          type: string
+          format: date-time
+    Currency:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO 4217 currency code
+      default: PEN
+      example: PEN
+    Amount:
+      type: number
+      minimum: 0
+      multipleOf: 0.01
+      description: Decimal amount with two fraction digits (BigDecimal, not floating point)
+      example: 1250.50
+    PositiveAmount:
+      type: number
+      minimum: 0.01
+      multipleOf: 0.01
+      description: Strictly positive decimal amount with two fraction digits
+      example: 100.00
+    OperationRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          $ref: '#/components/schemas/PositiveAmount'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        description:
+          type: string
+          maxLength: 200
+          example: Salary deposit
+    MovementReceipt:
+      type: object
+      required: [movementId, movementType, amount, currency, createdAt]
+      properties:
+        movementId:
+          type: string
+          description: Id of the movement registered in ms-transaction
+        movementType:
+          type: string
+          enum: [DEPOSIT, WITHDRAWAL, PAYMENT, CHARGE]
+        amount:
+          $ref: '#/components/schemas/PositiveAmount'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        createdAt:
+          type: string
+          format: date-time
+    Balance:
+      type: object
+      required: [productId, productType, balance, currency]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        productType:
+          type: string
+          enum: [BANK_ACCOUNT, CREDIT, CREDIT_CARD]
+        balance:
+          $ref: '#/components/schemas/Amount'
+        currency:
+          $ref: '#/components/schemas/Currency'
+    Problem:
+      type: object
+      description: RFC 7807 problem details
+      required: [status, title]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          example: about:blank
+        title:
+          type: string
+          example: Business rule violated
+        status:
+          type: integer
+          example: 422
+        detail:
+          type: string
+        instance:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        errors:
+          type: array
+          description: Field-level validation errors (400)
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string

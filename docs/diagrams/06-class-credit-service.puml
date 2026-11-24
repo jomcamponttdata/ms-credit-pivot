@@ -1,0 +1,285 @@
+@startuml 06-class-credit-service
+title credit-service - Diagrama de clases (hexagonal + Strategy)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+hide empty members
+
+' Nucleo: RxJava 3 | Infraestructura: Reactor (conversion en los adaptadores)
+
+package "domain" <<Rectangle>> {
+  class Credit {
+    -id : UUID
+    -customerId : UUID
+    -creditType : CreditType
+    -approvedAmount : Money
+    -outstandingBalance : Money
+    -interestRate : BigDecimal
+    -status : CreditStatus
+    -version : Long
+    -createdAt : Instant
+    +pay(Money)
+    +compensatePayment(Money)
+  }
+  class CreditCard {
+    -id : UUID
+    -customerId : UUID
+    -cardType : CardType
+    -cardNumber : String
+    -creditLimit : Money
+    -availableCredit : Money
+    -version : Long
+    -createdAt : Instant
+    +charge(Money)
+    +pay(Money)
+    +compensateCharge(Money)
+    +compensatePayment(Money)
+    +assertMatches(CustomerType)
+  }
+  class Money <<value object>> {
+    -amount : BigDecimal
+    -currency : String
+  }
+  class CustomerSnapshot <<value object>> {
+    -id : UUID
+    -customerType : CustomerType
+    -active : boolean
+  }
+  class MovementReceipt <<value object>> {
+    -movementId : String
+    -movementType : MovementType
+    -amount : Money
+    -createdAt : Instant
+  }
+  enum CreditType {
+    PERSONAL
+    BUSINESS
+  }
+  enum CardType {
+    PERSONAL
+    BUSINESS
+  }
+  enum CreditStatus {
+    ACTIVE
+    PAID_OFF
+  }
+  enum CustomerType {
+    PERSONAL
+    BUSINESS
+  }
+  enum MovementType {
+    PAYMENT
+    CHARGE
+  }
+  class BusinessRuleViolationException
+  class ResourceNotFoundException
+  class ConcurrentModificationException
+}
+
+package "domain.strategy" <<Rectangle>> {
+  interface CreditEligibilityPolicy <<Strategy por CustomerType>> {
+    +supports(CustomerType) : boolean
+    +validate(CustomerSnapshot, List<Credit> existing) : Completable
+  }
+  class PersonalCreditEligibilityPolicy {
+    solo 1 credito por persona
+  }
+  class BusinessCreditEligibilityPolicy {
+    multiples creditos por empresa
+  }
+  class CreditEligibilityPolicyFactory <<Factory>> {
+    +get(CustomerType) : CreditEligibilityPolicy
+  }
+}
+
+package "application.port.in" <<Rectangle>> {
+  interface CreateCreditUseCase {
+    +create(CreateCreditCommand) : Single<Credit>
+  }
+  interface GetCreditsUseCase {
+    +findAll(CreditFilter, PageQuery) : Flowable<Credit>
+    +findById(UUID) : Single<Credit>
+  }
+  interface UpdateCreditUseCase {
+    +update(UUID, UpdateCreditCommand) : Single<Credit>
+  }
+  interface DeleteCreditUseCase {
+    +delete(UUID) : Completable
+  }
+  interface GetCreditBalanceUseCase {
+    +getBalance(UUID) : Single<Balance>
+  }
+  interface PayCreditUseCase {
+    +pay(OperationCommand) : Single<MovementReceipt>
+  }
+
+  interface CreateCreditCardUseCase {
+    +create(CreateCreditCardCommand) : Single<CreditCard>
+  }
+  interface GetCreditCardsUseCase {
+    +findAll(CreditCardFilter, PageQuery) : Flowable<CreditCard>
+    +findById(UUID) : Single<CreditCard>
+  }
+  interface UpdateCreditCardUseCase {
+    +update(UUID, UpdateCreditCardCommand) : Single<CreditCard>
+  }
+  interface DeleteCreditCardUseCase {
+    +delete(UUID) : Completable
+  }
+  interface GetCreditCardBalanceUseCase {
+    +getBalance(UUID) : Single<Balance>
+  }
+  interface ChargeCreditCardUseCase {
+    +charge(OperationCommand) : Single<MovementReceipt>
+  }
+  interface PayCreditCardUseCase {
+    +pay(OperationCommand) : Single<MovementReceipt>
+  }
+  class OperationCommand <<record>> {
+    productId, amount : Money, description
+  }
+  class PageQuery <<record>>
+  class Balance <<record>>
+}
+
+package "application.port.out" <<Rectangle>> {
+  interface CreditRepositoryPort {
+    +save(Credit) : Single<Credit>
+    +findById(UUID) : Maybe<Credit>
+    +findAll(CreditFilter, PageQuery) : Flowable<Credit>
+    +findByCustomerId(UUID) : Flowable<Credit>
+    +deleteById(UUID) : Completable
+    +restoreAfterFailedMovement(Credit, expectedVersion) : Single<Credit>
+  }
+  interface CreditCardRepositoryPort {
+    +save(CreditCard) : Single<CreditCard>
+    +findById(UUID) : Maybe<CreditCard>
+    +findAll(CreditCardFilter, PageQuery) : Flowable<CreditCard>
+    +deleteById(UUID) : Completable
+    +restoreAfterFailedMovement(CreditCard, expectedVersion) : Single<CreditCard>
+  }
+  interface CustomerQueryPort {
+    +findById(UUID) : Single<CustomerSnapshot>
+  }
+  interface MovementGatewayPort {
+    +register(MovementCommand) : Single<MovementReceipt>
+  }
+  class MovementCommand <<record>> {
+    productId, productType,
+    movementType, amount : Money,
+    description
+  }
+}
+
+package "application.service" <<Rectangle>> {
+  class CreditCommandService
+  class CreditQueryService
+  class CreditOperationService
+  class CreditCardCommandService
+  class CreditCardQueryService
+  class CreditCardOperationService
+}
+
+package "infrastructure.adapter.in" <<Rectangle>> {
+  class CreditController <<inbound adapter>>
+  class CreditCardController <<inbound adapter>>
+  class CreditRestMapper
+  class GlobalExceptionHandler {
+    mapea errores a RFC 7807
+  }
+}
+
+package "infrastructure.adapter.out" <<Rectangle>> {
+  class R2dbcCreditRepositoryAdapter <<outbound adapter>>
+  class R2dbcCreditCardRepositoryAdapter <<outbound adapter>>
+  interface CreditR2dbcRepository <<Spring Data R2DBC>>
+  interface CreditCardR2dbcRepository <<Spring Data R2DBC>>
+  class WebClientCustomerAdapter <<outbound adapter>>
+  class WebClientMovementAdapter <<outbound adapter>>
+}
+
+' ---- Casos de uso implementados (credito) ----
+CreateCreditUseCase <|.. CreditCommandService
+UpdateCreditUseCase <|.. CreditCommandService
+DeleteCreditUseCase <|.. CreditCommandService
+GetCreditsUseCase <|.. CreditQueryService
+GetCreditBalanceUseCase <|.. CreditQueryService
+PayCreditUseCase <|.. CreditOperationService
+
+' ---- Casos de uso implementados (tarjeta) ----
+CreateCreditCardUseCase <|.. CreditCardCommandService
+UpdateCreditCardUseCase <|.. CreditCardCommandService
+DeleteCreditCardUseCase <|.. CreditCardCommandService
+GetCreditCardsUseCase <|.. CreditCardQueryService
+GetCreditCardBalanceUseCase <|.. CreditCardQueryService
+ChargeCreditCardUseCase <|.. CreditCardOperationService
+PayCreditCardUseCase <|.. CreditCardOperationService
+
+' ---- Dependencias del nucleo ----
+CreditCommandService ..> CreditRepositoryPort
+CreditCommandService ..> CustomerQueryPort
+CreditCommandService ..> CreditEligibilityPolicyFactory
+CreditQueryService ..> CreditRepositoryPort
+CreditOperationService ..> CreditRepositoryPort
+CreditOperationService ..> MovementGatewayPort
+CreditCardCommandService ..> CreditCardRepositoryPort
+CreditCardCommandService ..> CustomerQueryPort
+CreditCardQueryService ..> CreditCardRepositoryPort
+CreditCardOperationService ..> CreditCardRepositoryPort
+CreditCardOperationService ..> MovementGatewayPort
+
+' ---- Strategy ----
+CreditEligibilityPolicy <|.. PersonalCreditEligibilityPolicy
+CreditEligibilityPolicy <|.. BusinessCreditEligibilityPolicy
+CreditEligibilityPolicyFactory o-- CreditEligibilityPolicy
+
+' ---- Adaptadores ----
+CreditRepositoryPort <|.. R2dbcCreditRepositoryAdapter
+CreditCardRepositoryPort <|.. R2dbcCreditCardRepositoryAdapter
+CustomerQueryPort <|.. WebClientCustomerAdapter
+MovementGatewayPort <|.. WebClientMovementAdapter
+R2dbcCreditRepositoryAdapter ..> CreditR2dbcRepository
+R2dbcCreditCardRepositoryAdapter ..> CreditCardR2dbcRepository
+
+CreditController ..> CreateCreditUseCase
+CreditController ..> GetCreditsUseCase
+CreditController ..> UpdateCreditUseCase
+CreditController ..> DeleteCreditUseCase
+CreditController ..> GetCreditBalanceUseCase
+CreditController ..> PayCreditUseCase
+CreditController ..> CreditRestMapper
+
+CreditCardController ..> CreateCreditCardUseCase
+CreditCardController ..> GetCreditCardsUseCase
+CreditCardController ..> UpdateCreditCardUseCase
+CreditCardController ..> DeleteCreditCardUseCase
+CreditCardController ..> GetCreditCardBalanceUseCase
+CreditCardController ..> ChargeCreditCardUseCase
+CreditCardController ..> PayCreditCardUseCase
+CreditCardController ..> CreditRestMapper
+
+' ---- Dominio ----
+Credit --> CreditType
+Credit --> CreditStatus
+Credit *-- Money
+CreditCard --> CardType
+CreditCard *-- Money
+CustomerSnapshot --> CustomerType
+MovementReceipt --> MovementType
+
+note bottom of R2dbcCreditRepositoryAdapter
+  Una restriccion unica permite un solo credito PERSONAL
+  por cliente; los conflictos se traducen a la regla de
+  elegibilidad correspondiente (HTTP 422). @Version protege
+  actualizaciones concurrentes de creditos y tarjetas.
+end note
+
+note bottom of CreditCardOperationService
+  charge(): valida que el monto no exceda availableCredit
+  (regla en el dominio, no en el controlador). Ante un fallo
+  confirmado al registrar el movimiento, intenta compensar
+  el cambio local. Un timeout remoto es ambiguo y requiere
+  reconciliacion; no se compensa automaticamente.
+end note
+
+@enduml
