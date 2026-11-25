@@ -1,9 +1,8 @@
 package com.pivot.banking.credit.infrastructure.adapter.out.persistence;
 
+import java.util.UUID;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 
-import java.util.UUID;
-
 /** Spring Data repository for credit card rows. */
-public interface SpringDataCreditCardRepository extends ReactiveCrudRepository<CreditCardEntity, UUID> {
-}
+public interface SpringDataCreditCardRepository
+    extends ReactiveCrudRepository<CreditCardEntity, UUID> {}

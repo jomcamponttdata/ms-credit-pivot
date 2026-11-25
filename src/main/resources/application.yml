@@ -18,9 +18,25 @@ credit:
   services:
     customer-url: ${CUSTOMER_SERVICE_URL:http://localhost:8081}
     transaction-url: ${TRANSACTION_SERVICE_URL:http://localhost:8084}
-    transaction-timeout-ms: ${CREDIT_TRANSACTION_TIMEOUT_MS:3000}
+    customer-timeout-ms: ${CREDIT_CUSTOMER_TIMEOUT_MS:2000}
+    transaction-timeout-ms: ${CREDIT_TRANSACTION_TIMEOUT_MS:2000}
 server:
   port: ${CREDIT_SERVICE_PORT:8083}
 logging:
   level:
     com.pivot.banking.credit: INFO
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true
+
+resilience4j:
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 2s

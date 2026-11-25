@@ -1,0 +1,130 @@
+{
+  "info": {
+    "_postman_id": "9d0e5d26-2ea4-4cd1-ab9e-46f15b859212",
+    "name": "ms-credit - Part II setup",
+    "description": "Part II prerequisite setup: credit cards required by VIP savings and PYME checking eligibility.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 - Issue card for VIP customer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VIP card issued', () => pm.response.to.have.status(201));",
+              "pm.environment.set('vipCardId', pm.response.json().id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credit-cards",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credit-cards"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"{{vipCustomerId}}\",\n  \"cardType\": \"PERSONAL\",\n  \"creditLimit\": 5000,\n  \"currency\": \"PEN\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "02 - Issue card for PYME customer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('PYME card issued', () => pm.response.to.have.status(201));",
+              "pm.environment.set('pymeCardId', pm.response.json().id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/credit-cards",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "credit-cards"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"customerId\": \"{{pymeCustomerId}}\",\n  \"cardType\": \"BUSINESS\",\n  \"creditLimit\": 8000,\n  \"currency\": \"PEN\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8183"
+    },
+    {
+      "key": "vipCustomerId",
+      "value": ""
+    },
+    {
+      "key": "pymeCustomerId",
+      "value": ""
+    },
+    {
+      "key": "vipCardId",
+      "value": ""
+    },
+    {
+      "key": "pymeCardId",
+      "value": ""
+    }
+  ]
+}
