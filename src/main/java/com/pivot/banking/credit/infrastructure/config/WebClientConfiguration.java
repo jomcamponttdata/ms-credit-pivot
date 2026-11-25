@@ -8,9 +8,9 @@ import org.springframework.web.reactive.function.client.WebClient;
 @Configuration
 public class WebClientConfiguration {
 
-    /** Creates a reusable builder; adapters configure only their externalized base URLs. */
-    @Bean
-    public WebClient.Builder webClientBuilder() {
-        return WebClient.builder();
-    }
+  /** Creates a reusable builder; adapters configure only their externalized base URLs. */
+  @Bean
+  public WebClient.Builder webClientBuilder() {
+    return WebClient.builder();
+  }
 }

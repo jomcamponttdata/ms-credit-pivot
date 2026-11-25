@@ -7,8 +7,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class CreditServiceApplication {
 
-    /** Boots the Spring application context. */
-    public static void main(String[] args) {
-        SpringApplication.run(CreditServiceApplication.class, args);
-    }
+  /** Boots the Spring application context. */
+  public static void main(String[] args) {
+    SpringApplication.run(CreditServiceApplication.class, args);
+  }
 }
